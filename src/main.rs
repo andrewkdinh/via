@@ -4,13 +4,14 @@
 
 use std::env;
 use std::fs::File;
-// use std::io;
 use std::io::{BufRead, BufReader};
 
 #[derive(Debug)]
 /// The overarching editor class
 struct Editor {
+    /// The piece table
     piece_table: PieceTable,
+    /// Reader of the file
     reader: BufReader<File>,
 }
 
@@ -24,17 +25,26 @@ impl Editor {
 #[derive(Debug)]
 /// The main structure for storing text
 struct PieceTable {
+    /// The main table, contains `TableEntry`'s
     table: Vec<TableEntry>,
+    /// Original buffer
     original_buffer: Buffer,
+    /// Add buffer
     add_buffer: Buffer,
+    /// All active text. Only to be used when `text_up_to_date == true`
     text: String,
+    /// Whether `text` is up to date
     text_up_to_date: bool,
+    /// List of table entries that have had actions.
+    actions: Vec<TableEntry>,
+    /// Where in `self.actions` we are currently at
+    actions_index: usize,
 }
 
 impl PieceTable {
     /// Initializes a piece table with the original buffer set
     fn new(original_buffer: Buffer) -> PieceTable {
-        PieceTable {table: Vec::new(), original_buffer: original_buffer, add_buffer: Buffer::new(), text_up_to_date: true, text: String::new()}
+        PieceTable {table: Vec::new(), original_buffer: original_buffer, add_buffer: Buffer::new(), text: String::new(), text_up_to_date: true, actions: Vec::new(), actions_index: 0}
     }
 
     /// Add text at a certain index
@@ -44,9 +54,13 @@ impl PieceTable {
         if cursor > text_len {
             panic!("cursor ({}) is a greater value than text len ({})", cursor, text_len);
         } else if cursor == 0 {
-            self.table.insert(0, TableEntry::new(true, add_buffer_len, add_buffer_len + text.len()));
+            let new_table_entry = TableEntry::new(true, add_buffer_len, add_buffer_len + text.len());
+            self.add_action(&new_table_entry);
+            self.table.insert(0, new_table_entry);
         } else if cursor == text_len {
-            self.table.push(TableEntry::new(true, add_buffer_len, add_buffer_len + text.len()));
+            let new_table_entry = TableEntry::new(true, add_buffer_len, add_buffer_len + text.len());
+            self.add_action(&new_table_entry);
+            self.table.push(new_table_entry);
         } else {
             let mut table_entry_count = 0;
             let mut curr_pos = 0;
@@ -62,10 +76,13 @@ impl PieceTable {
                         self.table.insert(table_entry_count + 1, last_table_entry);
 
                         let middle_table_entry = TableEntry::new(true, add_buffer_len, add_buffer_len + text.len());
+                        self.add_action(&middle_table_entry);
                         self.table.insert(table_entry_count + 1, middle_table_entry);
                         break
                     } else if curr_pos == cursor {
-                        self.table.insert(table_entry_count, TableEntry::new(true, add_buffer_len, add_buffer_len + text.len()));
+                        let new_table_entry = TableEntry::new(true, add_buffer_len, add_buffer_len + text.len());
+                        self.add_action(&new_table_entry);
+                        self.table.insert(table_entry_count, new_table_entry);
                         break
                     }
                     curr_pos += len;
@@ -89,7 +106,7 @@ impl PieceTable {
         let mut temp_table_entry = TableEntry::new(true, 0, 0);
         let mut temp_table_set = false;
         let mut temp_table_index = 0;
-        for table_entry in &mut self.table {
+        for table_entry in self.table.iter_mut() {
             if curr_pos == end {
                 break
             }
@@ -123,6 +140,42 @@ impl PieceTable {
         if temp_table_set {
             self.table.insert(temp_table_index, temp_table_entry);
         }
+        self.text_up_to_date = false;
+    }
+
+    /// Add a table entry to actions
+    fn add_action(&mut self, table_entry: &TableEntry) {
+        // Remove actions after current index
+        self.actions = self.actions[..self.actions_index].to_vec();
+        self.actions.push(*table_entry);
+        self.actions_index += 1;
+    }
+
+    /// Undo an action. Errors if no actions to undo
+    fn undo(&mut self) {
+        // TODO: Need to support undoing delete's, which can span multiple table entries
+        if self.actions.is_empty() {
+            panic!("Unable to undo");
+        }
+        let table_entry_copy : &TableEntry = match self.actions.get(self.actions_index - 1) {
+            Some(table_entry) => table_entry,
+            None => panic!("Unable to get last action"),
+        };
+        for table_entry in self.table.iter_mut() {
+            if table_entry.is_add_buffer == table_entry_copy.is_add_buffer
+                && table_entry.start_index == table_entry_copy.start_index
+                && table_entry.end_index == table_entry_copy.end_index {
+                    table_entry.switch();
+                    break
+                }
+        }
+        self.text_up_to_date = false;
+        self.actions_index -= 1;
+    }
+
+    /// Redo an action. Errors if no actions to redo
+    fn redo(&mut self) {
+        // TODO
         self.text_up_to_date = false;
     }
 
@@ -186,12 +239,17 @@ impl PieceTable {
     }
 }
 
+#[derive(Copy, Clone)] // Needed for PieceTable.actions
 #[derive(Debug)]
 /// An entry in PieceTable's table
 struct TableEntry {
+    /// Whether this table entry points to the add buffer
     is_add_buffer: bool,
+    /// Start index
     start_index: usize,
+    /// End index
     end_index: usize,
+    /// Whether this table is visible
     active: bool,
 }
 
@@ -200,13 +258,21 @@ impl TableEntry {
     fn new(is_add_buffer: bool, start_index: usize, end_index: usize) -> TableEntry {
         TableEntry {is_add_buffer: is_add_buffer, start_index: start_index, end_index: end_index, active: true}
     }
+
+    /// Change from active to deactivated and visa versa
+    fn switch(&mut self) {
+        self.active = !self.active;
+    }
 }
 
 #[derive(Debug)]
 /// Immutable text (abstracted)
 struct Buffer {
+    /// Text contained in this buffer. Only use when `text_up_to_date == true`
     text: String,
+    /// Whether `text` is up to date
     text_up_to_date: bool,
+    /// Text pieces making up `text`
     text_pieces: Vec<String>,
 }
 
@@ -270,11 +336,16 @@ fn main() {
     piece_table.add_text(String::from("b"), 1);
     piece_table.add_text(String::from("de"), 3);
     println!("New: {}", piece_table.text());
+    /*
     piece_table.delete_text(0, 1);
     println!("New: {}", piece_table.text());
     piece_table.delete_text(4, 5);
     println!("New: {}", piece_table.text());
     piece_table.delete_text(4, 5);
+    println!("New: {}", piece_table.text());
+    */
+    piece_table.undo();
+    piece_table.undo();
     println!("New: {}", piece_table.text());
 }
 
