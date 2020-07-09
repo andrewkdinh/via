@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-#![warn(unused_variables)]
+// #![warn(unused_variables)]
 // #![warn(unused_mut)]
 
 use std::env;
@@ -35,8 +35,8 @@ struct PieceTable {
     text: String,
     /// Whether `text` is up to date
     text_up_to_date: bool,
-    /// List of table entries that have had actions.
-    actions: Vec<TableEntry>,
+    /// List of table entries that have had actions
+    actions: Vec<Vec<TableEntry>>,
     /// Where in `self.actions` we are currently at
     actions_index: usize,
 }
@@ -55,11 +55,11 @@ impl PieceTable {
             panic!("cursor ({}) is a greater value than text len ({})", cursor, text_len);
         } else if cursor == 0 {
             let new_table_entry = TableEntry::new(true, add_buffer_len, add_buffer_len + text.len());
-            self.add_action(&new_table_entry);
+            self.add_action(vec![new_table_entry]);
             self.table.insert(0, new_table_entry);
         } else if cursor == text_len {
             let new_table_entry = TableEntry::new(true, add_buffer_len, add_buffer_len + text.len());
-            self.add_action(&new_table_entry);
+            self.add_action(vec![new_table_entry]);
             self.table.push(new_table_entry);
         } else {
             let mut table_entry_count = 0;
@@ -76,12 +76,12 @@ impl PieceTable {
                         self.table.insert(table_entry_count + 1, last_table_entry);
 
                         let middle_table_entry = TableEntry::new(true, add_buffer_len, add_buffer_len + text.len());
-                        self.add_action(&middle_table_entry);
+                        self.add_action(vec![middle_table_entry]);
                         self.table.insert(table_entry_count + 1, middle_table_entry);
                         break
                     } else if curr_pos == cursor {
                         let new_table_entry = TableEntry::new(true, add_buffer_len, add_buffer_len + text.len());
-                        self.add_action(&new_table_entry);
+                        self.add_action(vec![new_table_entry]);
                         self.table.insert(table_entry_count, new_table_entry);
                         break
                     }
@@ -102,6 +102,7 @@ impl PieceTable {
         }
         let mut curr_pos = 0;
         let mut table_entry_count = 0;
+        let mut action: Vec<TableEntry> = Vec::new();
 
         let mut temp_table_entry = TableEntry::new(true, 0, 0);
         let mut temp_table_set = false;
@@ -118,18 +119,21 @@ impl PieceTable {
                     temp_table_entry = TableEntry::new(table_entry.is_add_buffer, table_entry.start_index, table_entry.start_index + split_point);
                     table_entry.start_index = table_entry.start_index + split_point;
                     table_entry.active = false;
+                    action.push(*table_entry);
 
                     temp_table_index = table_entry_count;
                     temp_table_set = true;
                 } else if curr_pos >= start && curr_pos + len <= end {
                         // Start is this/before this cell & end is this/after this cell
                         table_entry.active = false;
+                        action.push(*table_entry);
                 } else if curr_pos >= start && curr_pos + len > end {
                     // At the table entry to end at and split
                     let split_point = end - curr_pos;
                     let mut temp_table_entry = TableEntry::new(table_entry.is_add_buffer, table_entry.start_index, table_entry.start_index + split_point);
                     temp_table_entry.active = false;
                     table_entry.start_index = table_entry.start_index + split_point;
+                    action.push(temp_table_entry);
                     self.table.insert(table_entry_count, temp_table_entry);
                     break
                 }
@@ -140,43 +144,65 @@ impl PieceTable {
         if temp_table_set {
             self.table.insert(temp_table_index, temp_table_entry);
         }
+        self.add_action(action);
         self.text_up_to_date = false;
     }
 
     /// Add a table entry to actions
-    fn add_action(&mut self, table_entry: &TableEntry) {
+    fn add_action(&mut self, action: Vec<TableEntry>) {
         // Remove actions after current index
         self.actions = self.actions[..self.actions_index].to_vec();
-        self.actions.push(*table_entry);
+        // self.actions.push(*table_entry);
+        self.actions.push(action);
         self.actions_index += 1;
     }
 
     /// Undo an action. Errors if no actions to undo
     fn undo(&mut self) {
-        // TODO: Need to support undoing delete's, which can span multiple table entries
         if self.actions.is_empty() {
             panic!("Unable to undo");
         }
-        let table_entry_copy : &TableEntry = match self.actions.get(self.actions_index - 1) {
-            Some(table_entry) => table_entry,
+        match self.actions.get(self.actions_index - 1) {
+            Some(action) => {
+                for table_entry_copy in action {
+                    for table_entry in self.table.iter_mut() {
+                        if table_entry.is_add_buffer == table_entry_copy.is_add_buffer
+                            && table_entry.start_index == table_entry_copy.start_index
+                            && table_entry.end_index == table_entry_copy.end_index {
+                                table_entry.switch();
+                                break
+                            }
+                    }
+                }
+            }
             None => panic!("Unable to get last action"),
         };
-        for table_entry in self.table.iter_mut() {
-            if table_entry.is_add_buffer == table_entry_copy.is_add_buffer
-                && table_entry.start_index == table_entry_copy.start_index
-                && table_entry.end_index == table_entry_copy.end_index {
-                    table_entry.switch();
-                    break
-                }
-        }
         self.text_up_to_date = false;
         self.actions_index -= 1;
     }
 
     /// Redo an action. Errors if no actions to redo
     fn redo(&mut self) {
-        // TODO
+        if self.actions.is_empty() {
+            panic!("Unable to redo");
+        }
+        match self.actions.get(self.actions_index) {
+            Some(action) => {
+                for table_entry_copy in action {
+                    for table_entry in self.table.iter_mut() {
+                        if table_entry.is_add_buffer == table_entry_copy.is_add_buffer
+                            && table_entry.start_index == table_entry_copy.start_index
+                            && table_entry.end_index == table_entry_copy.end_index {
+                                table_entry.switch();
+                                break
+                            }
+                    }
+                }
+            }
+            None => panic!("Unable to get next action"),
+        };
         self.text_up_to_date = false;
+        self.actions_index += 1;
     }
 
     /// Returns the text represented by a table entry.
@@ -336,16 +362,19 @@ fn main() {
     piece_table.add_text(String::from("b"), 1);
     piece_table.add_text(String::from("de"), 3);
     println!("New: {}", piece_table.text());
-    /*
-    piece_table.delete_text(0, 1);
-    println!("New: {}", piece_table.text());
-    piece_table.delete_text(4, 5);
-    println!("New: {}", piece_table.text());
-    piece_table.delete_text(4, 5);
-    println!("New: {}", piece_table.text());
-    */
     piece_table.undo();
+    println!("New: {}", piece_table.text());
     piece_table.undo();
+    println!("New: {}", piece_table.text());
+    piece_table.redo();
+    println!("New: {}", piece_table.text());
+    piece_table.delete_text(0, 3);
+    println!("New: {}", piece_table.text());
+    piece_table.undo();
+    println!("New: {}", piece_table.text());
+    piece_table.undo();
+    println!("New: {}", piece_table.text());
+    piece_table.redo();
     println!("New: {}", piece_table.text());
 }
 
