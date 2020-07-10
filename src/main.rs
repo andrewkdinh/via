@@ -13,12 +13,30 @@ struct Editor {
     piece_table: PieceTable,
     /// Reader of the file
     reader: BufReader<File>,
+    /// Whether we have read all of `self.reader`
+    eof_reached: bool,
 }
 
 impl Editor {
     /// Initialize a new editor with a piece table and reader
-    fn new(piece_table: PieceTable, reader: BufReader<File>) -> Editor {
-        Editor {piece_table: piece_table, reader: reader}
+    fn new(piece_table: PieceTable, reader: BufReader<File>, eof_reached: bool) -> Editor {
+        Editor {piece_table: piece_table, reader: reader, eof_reached: eof_reached}
+    }
+
+    /// Read to end of the file and add it to `piece_table.original_buffer`
+    fn read_to_eof(&mut self) {
+        let mut final_str = String::new();
+        let mut temp_str = String::new();
+        loop {
+            match self.reader.read_line(&mut temp_str) {
+                Ok(0) => break,
+                Ok(len) => len,
+                Err(e) => panic!("Error reading file: {:?}", e),
+            };
+            final_str.push_str(&temp_str);
+            temp_str.clear();
+        }
+        self.piece_table.original_buffer.update_add(final_str);
     }
 }
 
@@ -35,9 +53,14 @@ struct PieceTable {
     text: String,
     /// Whether `text` is up to date
     text_up_to_date: bool,
-    /// List of table entries that have had actions
+    /// List of actions, which are lists of table entries
+    /// 
+    /// **NOTE**: Vectors stored are copies of the original
     actions: Vec<Vec<TableEntry>>,
     /// Where in `self.actions` we are currently at
+    /// 
+    /// **NOTE**: A value of 0 means no actions have been taken.
+    /// A value of 1 means 1 action has been taken.
     actions_index: usize,
 }
 
@@ -124,9 +147,9 @@ impl PieceTable {
                     temp_table_index = table_entry_count;
                     temp_table_set = true;
                 } else if curr_pos >= start && curr_pos + len <= end {
-                        // Start is this/before this cell & end is this/after this cell
-                        table_entry.active = false;
-                        action.push(*table_entry);
+                    // Start is this/before this cell & end is this/after this cell
+                    table_entry.active = false;
+                    action.push(*table_entry);
                 } else if curr_pos >= start && curr_pos + len > end {
                     // At the table entry to end at and split
                     let split_point = end - curr_pos;
@@ -135,6 +158,20 @@ impl PieceTable {
                     table_entry.start_index = table_entry.start_index + split_point;
                     action.push(temp_table_entry);
                     self.table.insert(table_entry_count, temp_table_entry);
+                    break
+                } else if curr_pos < start && curr_pos + len > start && curr_pos + len > end {
+                    // At table entry to split into 3 [abc] -> [a](b)[c]
+                    let split_point_first = start - curr_pos;
+                    let split_point_second = end - curr_pos;
+                    let old_end_index = table_entry.end_index;
+
+                    table_entry.end_index = split_point_first;
+                    let mut middle_table_entry = TableEntry::new(table_entry.is_add_buffer, table_entry.start_index + split_point_first, table_entry.start_index + split_point_second);
+                    middle_table_entry.active = false;
+                    action.push(middle_table_entry);
+                    let end_table_entry = TableEntry::new(table_entry.is_add_buffer, table_entry.start_index + split_point_second, old_end_index);
+                    self.table.insert(table_entry_count + 1, middle_table_entry);
+                    self.table.insert(table_entry_count + 2, end_table_entry);
                     break
                 }
                 curr_pos += len;
@@ -152,9 +189,8 @@ impl PieceTable {
     fn add_action(&mut self, action: Vec<TableEntry>) {
         // Remove actions after current index
         self.actions = self.actions[..self.actions_index].to_vec();
-        // self.actions.push(*table_entry);
         self.actions.push(action);
-        self.actions_index += 1;
+        self.actions_index = self.actions.len();
     }
 
     /// Undo an action. Errors if no actions to undo
@@ -162,6 +198,7 @@ impl PieceTable {
         if self.actions.is_empty() {
             panic!("Unable to undo");
         }
+        // TODO: I'm not sure how computationally expensive this is, but it probably could be improved
         match self.actions.get(self.actions_index - 1) {
             Some(action) => {
                 for table_entry_copy in action {
@@ -183,7 +220,7 @@ impl PieceTable {
 
     /// Redo an action. Errors if no actions to redo
     fn redo(&mut self) {
-        if self.actions.is_empty() {
+        if self.actions.is_empty() || self.actions.len() <= self.actions_index {
             panic!("Unable to redo");
         }
         match self.actions.get(self.actions_index) {
@@ -254,13 +291,14 @@ impl PieceTable {
     }
 
     /// Insert a table entry to a specific index
-    fn insert(&mut self, piece: TableEntry, index: usize) {
-        self.table.insert(index, piece);
+    fn insert(&mut self, index: usize, table_entry: TableEntry) {
+        self.table.insert(index, table_entry);
+        self.text_up_to_date = false;
     }
 
     /// Add a table entry to the end of the table
-    fn push(&mut self, piece: TableEntry) {
-        self.table.push(piece);
+    fn push(&mut self, table_entry: TableEntry) {
+        self.table.push(table_entry);
         self.text_up_to_date = false;
     }
 }
@@ -358,32 +396,19 @@ fn main() {
     let mut piece_table = editor.piece_table;
 
     println!("Org: {}", piece_table.text());
-    piece_table.add_text(String::from("ac"), 0);
-    piece_table.add_text(String::from("b"), 1);
-    piece_table.add_text(String::from("de"), 3);
-    println!("New: {}", piece_table.text());
-    piece_table.undo();
-    println!("New: {}", piece_table.text());
-    piece_table.undo();
-    println!("New: {}", piece_table.text());
-    piece_table.redo();
-    println!("New: {}", piece_table.text());
-    piece_table.delete_text(0, 3);
-    println!("New: {}", piece_table.text());
-    piece_table.undo();
-    println!("New: {}", piece_table.text());
-    piece_table.undo();
-    println!("New: {}", piece_table.text());
-    piece_table.redo();
+    piece_table.delete_text(1, 2);
     println!("New: {}", piece_table.text());
 }
 
 fn initialize(file_name: &String) -> Editor {
-    let f = File::open(file_name).expect("Failed to open file");
-    let mut reader = BufReader::new(f);
+    // TODO: Create file if doesn't exist / detect if is folder, etc
+    // EDIT: Might not want to create file, but instead write to memory then at the end then write to file
+    let file = File::open(file_name).expect("Failed to open file");
+    let mut reader = BufReader::new(file);
     // Read until viewport is reached
     // For now, only read 2 lines
-    let initial_text = read_lines(&mut reader, 2);
+    let mut initial_text =String::new();
+    let eof_reached = read_lines(&mut reader, 2, &mut initial_text);
     let text_len = initial_text.len();
     let mut original_buffer = Buffer::new();
     original_buffer.update_add(initial_text);
@@ -394,20 +419,20 @@ fn initialize(file_name: &String) -> Editor {
     }
     piece_table.push(first_entry);
 
-    Editor::new(piece_table, reader)
+    Editor::new(piece_table, reader, eof_reached)
 }
 
-fn read_lines(reader: &mut BufReader<File>, num_lines: u8) -> String {
-    let mut final_str = String::new();
+/// Read `num_lines` from `reader`, append to str, and returns whether EOF reached
+fn read_lines(reader: &mut BufReader<File>, num_lines: usize, str: &mut String) -> bool {
     let mut temp_str = String::new();
     for _ in 0..num_lines {
         match reader.read_line(&mut temp_str) {
-            Ok(0) => break, // TODO: Handle EOF better
+            Ok(0) => return true,
             Ok(len) => len,
             Err(e) => panic!("Error reading file: {:?}", e),
         };
-        final_str.push_str(&temp_str);
+        str.push_str(&temp_str);
         temp_str.clear();
     }
-    final_str
+    false
 }
