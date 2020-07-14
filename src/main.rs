@@ -2,434 +2,139 @@
 // #![warn(unused_variables)]
 // #![warn(unused_mut)]
 
+extern crate termion;
+extern crate regex;
+
 use std::env;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufReader};
+// use std::io::prelude::*;
+use std::path::Path;
+use regex::Regex;
 
-#[derive(Debug)]
-/// The overarching editor class
-struct Editor {
-    /// The piece table
-    piece_table: PieceTable,
-    /// Reader of the file
-    reader: BufReader<File>,
-    /// Whether we have read all of `self.reader`
-    eof_reached: bool,
-}
+mod editor;
+mod piece_table;
 
-impl Editor {
-    /// Initialize a new editor with a piece table and reader
-    fn new(piece_table: PieceTable, reader: BufReader<File>, eof_reached: bool) -> Editor {
-        Editor {piece_table: piece_table, reader: reader, eof_reached: eof_reached}
-    }
-
-    /// Read to end of the file and add it to `piece_table.original_buffer`
-    fn read_to_eof(&mut self) {
-        let mut final_str = String::new();
-        let mut temp_str = String::new();
-        loop {
-            match self.reader.read_line(&mut temp_str) {
-                Ok(0) => break,
-                Ok(len) => len,
-                Err(e) => panic!("Error reading file: {:?}", e),
-            };
-            final_str.push_str(&temp_str);
-            temp_str.clear();
-        }
-        self.piece_table.original_buffer.update_add(final_str);
-    }
-}
-
-#[derive(Debug)]
-/// The main structure for storing text
-struct PieceTable {
-    /// The main table, contains `TableEntry`'s
-    table: Vec<TableEntry>,
-    /// Original buffer
-    original_buffer: Buffer,
-    /// Add buffer
-    add_buffer: Buffer,
-    /// All active text. Only to be used when `text_up_to_date == true`
-    text: String,
-    /// Whether `text` is up to date
-    text_up_to_date: bool,
-    /// List of actions, which are lists of table entries
-    /// 
-    /// **NOTE**: Vectors stored are copies of the original
-    actions: Vec<Vec<TableEntry>>,
-    /// Where in `self.actions` we are currently at
-    /// 
-    /// **NOTE**: A value of 0 means no actions have been taken.
-    /// A value of 1 means 1 action has been taken.
-    actions_index: usize,
-}
-
-impl PieceTable {
-    /// Initializes a piece table with the original buffer set
-    fn new(original_buffer: Buffer) -> PieceTable {
-        PieceTable {table: Vec::new(), original_buffer: original_buffer, add_buffer: Buffer::new(), text: String::new(), text_up_to_date: true, actions: Vec::new(), actions_index: 0}
-    }
-
-    /// Add text at a certain index
-    fn add_text(&mut self, text: String, cursor: usize) {
-        let text_len = self.text_len();
-        let add_buffer_len = self.add_buffer.text().len();
-        if cursor > text_len {
-            panic!("cursor ({}) is a greater value than text len ({})", cursor, text_len);
-        } else if cursor == 0 {
-            let new_table_entry = TableEntry::new(true, add_buffer_len, add_buffer_len + text.len());
-            self.add_action(vec![new_table_entry]);
-            self.table.insert(0, new_table_entry);
-        } else if cursor == text_len {
-            let new_table_entry = TableEntry::new(true, add_buffer_len, add_buffer_len + text.len());
-            self.add_action(vec![new_table_entry]);
-            self.table.push(new_table_entry);
-        } else {
-            let mut table_entry_count = 0;
-            let mut curr_pos = 0;
-            for table_entry in &mut self.table {
-                if table_entry.active {
-                    let len = table_entry.end_index - table_entry.start_index;
-                    if curr_pos + len > cursor {
-                        let last_table_entry_length = len - (cursor - curr_pos);
-                        let old_table_entry_end_index = table_entry.end_index;
-
-                        table_entry.end_index = table_entry.end_index - last_table_entry_length;
-                        let last_table_entry = TableEntry::new(table_entry.is_add_buffer, table_entry.end_index, old_table_entry_end_index);
-                        self.table.insert(table_entry_count + 1, last_table_entry);
-
-                        let middle_table_entry = TableEntry::new(true, add_buffer_len, add_buffer_len + text.len());
-                        self.add_action(vec![middle_table_entry]);
-                        self.table.insert(table_entry_count + 1, middle_table_entry);
-                        break
-                    } else if curr_pos == cursor {
-                        let new_table_entry = TableEntry::new(true, add_buffer_len, add_buffer_len + text.len());
-                        self.add_action(vec![new_table_entry]);
-                        self.table.insert(table_entry_count, new_table_entry);
-                        break
-                    }
-                    curr_pos += len;
-                }
-                table_entry_count += 1;
-            }
-        }
-        self.add_buffer.update_add(text);
-        self.text_up_to_date = false;
-    }
-
-    /// Delete text from `start` to `end`
-    fn delete_text(&mut self, start: usize, end: usize) {
-        let text_len = self.text_len();
-        if start >= end || end == 0 || end > text_len  {
-            panic!("Can't delete from start ({}) to end ({}) of text size {}", start, end, self.text_len());
-        }
-        let mut curr_pos = 0;
-        let mut table_entry_count = 0;
-        let mut action: Vec<TableEntry> = Vec::new();
-
-        let mut temp_table_entry = TableEntry::new(true, 0, 0);
-        let mut temp_table_set = false;
-        let mut temp_table_index = 0;
-        for table_entry in self.table.iter_mut() {
-            if curr_pos == end {
-                break
-            }
-            if table_entry.active {
-                let len = table_entry.end_index - table_entry.start_index;
-                if curr_pos <= start && curr_pos + len > start && curr_pos + len <= end {
-                    // At table entry to start at and split, but possibly continue
-                    let split_point = start - curr_pos;
-                    temp_table_entry = TableEntry::new(table_entry.is_add_buffer, table_entry.start_index, table_entry.start_index + split_point);
-                    table_entry.start_index = table_entry.start_index + split_point;
-                    table_entry.active = false;
-                    action.push(*table_entry);
-
-                    temp_table_index = table_entry_count;
-                    temp_table_set = true;
-                } else if curr_pos >= start && curr_pos + len <= end {
-                    // Start is this/before this cell & end is this/after this cell
-                    table_entry.active = false;
-                    action.push(*table_entry);
-                } else if curr_pos >= start && curr_pos + len > end {
-                    // At the table entry to end at and split
-                    let split_point = end - curr_pos;
-                    let mut temp_table_entry = TableEntry::new(table_entry.is_add_buffer, table_entry.start_index, table_entry.start_index + split_point);
-                    temp_table_entry.active = false;
-                    table_entry.start_index = table_entry.start_index + split_point;
-                    action.push(temp_table_entry);
-                    self.table.insert(table_entry_count, temp_table_entry);
-                    break
-                } else if curr_pos < start && curr_pos + len > start && curr_pos + len > end {
-                    // At table entry to split into 3 [abc] -> [a](b)[c]
-                    let split_point_first = start - curr_pos;
-                    let split_point_second = end - curr_pos;
-                    let old_end_index = table_entry.end_index;
-
-                    table_entry.end_index = split_point_first;
-                    let mut middle_table_entry = TableEntry::new(table_entry.is_add_buffer, table_entry.start_index + split_point_first, table_entry.start_index + split_point_second);
-                    middle_table_entry.active = false;
-                    action.push(middle_table_entry);
-                    let end_table_entry = TableEntry::new(table_entry.is_add_buffer, table_entry.start_index + split_point_second, old_end_index);
-                    self.table.insert(table_entry_count + 1, middle_table_entry);
-                    self.table.insert(table_entry_count + 2, end_table_entry);
-                    break
-                }
-                curr_pos += len;
-            }
-            table_entry_count += 1;
-        }
-        if temp_table_set {
-            self.table.insert(temp_table_index, temp_table_entry);
-        }
-        self.add_action(action);
-        self.text_up_to_date = false;
-    }
-
-    /// Add a table entry to actions
-    fn add_action(&mut self, action: Vec<TableEntry>) {
-        // Remove actions after current index
-        self.actions = self.actions[..self.actions_index].to_vec();
-        self.actions.push(action);
-        self.actions_index = self.actions.len();
-    }
-
-    /// Undo an action. Errors if no actions to undo
-    fn undo(&mut self) {
-        if self.actions.is_empty() {
-            panic!("Unable to undo");
-        }
-        // TODO: I'm not sure how computationally expensive this is, but it probably could be improved
-        match self.actions.get(self.actions_index - 1) {
-            Some(action) => {
-                for table_entry_copy in action {
-                    for table_entry in self.table.iter_mut() {
-                        if table_entry.is_add_buffer == table_entry_copy.is_add_buffer
-                            && table_entry.start_index == table_entry_copy.start_index
-                            && table_entry.end_index == table_entry_copy.end_index {
-                                table_entry.switch();
-                                break
-                            }
-                    }
-                }
-            }
-            None => panic!("Unable to get last action"),
-        };
-        self.text_up_to_date = false;
-        self.actions_index -= 1;
-    }
-
-    /// Redo an action. Errors if no actions to redo
-    fn redo(&mut self) {
-        if self.actions.is_empty() || self.actions.len() <= self.actions_index {
-            panic!("Unable to redo");
-        }
-        match self.actions.get(self.actions_index) {
-            Some(action) => {
-                for table_entry_copy in action {
-                    for table_entry in self.table.iter_mut() {
-                        if table_entry.is_add_buffer == table_entry_copy.is_add_buffer
-                            && table_entry.start_index == table_entry_copy.start_index
-                            && table_entry.end_index == table_entry_copy.end_index {
-                                table_entry.switch();
-                                break
-                            }
-                    }
-                }
-            }
-            None => panic!("Unable to get next action"),
-        };
-        self.text_up_to_date = false;
-        self.actions_index += 1;
-    }
-
-    /// Returns the text represented by a table entry.
-    ///
-    /// Assumes buffer is up to date
-    fn table_entry_text(&self, table_entry: &TableEntry) -> &str {
-        let buffer = if table_entry.is_add_buffer {&self.add_buffer} else {&self.original_buffer};
-        assert_eq!(buffer.text_up_to_date, true);
-        match buffer.text().get(table_entry.start_index..table_entry.end_index) {
-            Some(text) => text,
-            None => panic!("Unable to get {}[{}..{}]", buffer.text(), table_entry.start_index, table_entry.end_index),
-        }
-    }
-
-    /// Returns all visible text.
-    fn text(&mut self) -> &str {
-        let a = self.original_buffer.update_text();
-        let b = self.add_buffer.update_text();
-        if self.text_up_to_date && !a && !b {
-            return &self.text;
-        }
-
-        // TODO: Be more efficient about doing this
-        let mut text = String::new();
-        for table_entry in &self.table {
-            if table_entry.active {
-                text.push_str(self.table_entry_text(table_entry));
-            }
-        }
-        self.text = text;
-        self.text_up_to_date = true;
-        &self.text
-    }
-
-    /// A slightly more efficient way of calculating the length of `self.text().len()`
-    fn text_len(&self) -> usize {
-        if self.text_up_to_date {
-            return self.text.len();
-        }
-
-        // TODO: Be more efficient about doing this
-        let mut len = 0;
-        for table_entry in &self.table {
-            if table_entry.active {
-                len += table_entry.end_index - table_entry.start_index;
-            }
-        }
-        len
-    }
-
-    /// Insert a table entry to a specific index
-    fn insert(&mut self, index: usize, table_entry: TableEntry) {
-        self.table.insert(index, table_entry);
-        self.text_up_to_date = false;
-    }
-
-    /// Add a table entry to the end of the table
-    fn push(&mut self, table_entry: TableEntry) {
-        self.table.push(table_entry);
-        self.text_up_to_date = false;
-    }
-}
-
-#[derive(Copy, Clone)] // Needed for PieceTable.actions
-#[derive(Debug)]
-/// An entry in PieceTable's table
-struct TableEntry {
-    /// Whether this table entry points to the add buffer
-    is_add_buffer: bool,
-    /// Start index
-    start_index: usize,
-    /// End index
-    end_index: usize,
-    /// Whether this table is visible
-    active: bool,
-}
-
-impl TableEntry {
-    /// Initalize a table entry
-    fn new(is_add_buffer: bool, start_index: usize, end_index: usize) -> TableEntry {
-        TableEntry {is_add_buffer: is_add_buffer, start_index: start_index, end_index: end_index, active: true}
-    }
-
-    /// Change from active to deactivated and visa versa
-    fn switch(&mut self) {
-        self.active = !self.active;
-    }
-}
-
-#[derive(Debug)]
-/// Immutable text (abstracted)
-struct Buffer {
-    /// Text contained in this buffer. Only use when `text_up_to_date == true`
-    text: String,
-    /// Whether `text` is up to date
-    text_up_to_date: bool,
-    /// Text pieces making up `text`
-    text_pieces: Vec<String>,
-}
-
-impl Buffer {
-    /// Initializes the buffer with an empty string
-    fn new() -> Buffer {
-        Buffer {text: String::from(""), text_up_to_date: true, text_pieces: Vec::new()}
-    }
-
-    fn text(&self) -> &str {
-        &self.text
-    }
-
-    /// Make `self.text` up to date.
-    ///
-    /// Returns whether text was updated or not
-    fn update_text(&mut self) -> bool {
-        if self.text_up_to_date {
-            return false;
-        }
-        // TODO: Change this to keep track of self.text_pieces_index to be more efficient
-        // e.g. start at the last added index rather than creating from scratch every time
-        self.text.clear();
-        for s in &self.text_pieces {
-            self.text.push_str(&s);
-        }
-        self.text_up_to_date = true;
-        true
-    }
-
-    /// Add a text piece to text pieces
-    fn add(&mut self, text: String) {
-        self.text_pieces.push(text);
-        self.text_up_to_date = false;
-    }
-
-    /// Add a text piece AND update `self.text`
-    fn update_add(&mut self, text: String) {
-        if self.text_up_to_date {
-            self.text.push_str(text.as_str());
-            self.text_pieces.push(text);
-        } else {
-            self.add(text);
-            self.update_text();
-        }
-    }
-}
+// use termion::{color, cursor, clear};
+// use termion::event::*;
+use termion::async_stdin;
+use termion::input::{MouseTerminal};
+use termion::raw::IntoRawMode;
+use std::io::{self, Write};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
     // TODO: Match command line options, different order, etc.
+    let editor_options = process_args(&args);
+    /*
     let file_name = match args.last() {
         Some(file_name) => file_name,
         None => panic!("Please specify a file to edit"),
     };
-    let editor = initialize(&file_name);
+    */
+    let editor = initialize(editor_options);
     let mut piece_table = editor.piece_table;
 
-    println!("Org: {}", piece_table.text());
-    piece_table.delete_text(1, 2);
-    println!("New: {}", piece_table.text());
+    // Print the current file text onto screen
+    let stdin = async_stdin();
+    let mut stdout = MouseTerminal::from(io::stdout().into_raw_mode().unwrap());
+    write!(stdout, "{}{}{}{}", 
+        termion::clear::All,
+        termion::cursor::Goto(1, 1),
+        piece_table.text(),
+        termion::cursor::Hide).unwrap();
+    stdout.flush().unwrap();
+
+    /*
+    for c in stdin.keys() {
+        match c.unwrap() {
+            Key::Esc                        => normal_mode(),
+            Key::Char(':')                  => colon_mode(),
+            Key::Char('i')                  => insert_mode(c.unwrap()),
+            Key::Char('v') | Key::Char('V') => visual_mode(c.unwrap()),
+            Key::Left | Key::Right          => movement_horizontal(c.unwrap()),
+            Key::Up | Key::Down             => movement_vertical(c.unwrap()),
+            Key::Char(c)                    => add_text_buffered(c),
+            _                               => unsupported(),
+        }
+        stdout.flush().unwrap();
+    }
+    write!(stdout, "{}", termion::cursor::Show).unwrap();
+    */
 }
 
-fn initialize(file_name: &String) -> Editor {
-    // TODO: Create file if doesn't exist / detect if is folder, etc
-    // EDIT: Might not want to create file, but instead write to memory then at the end then write to file
-    let file = File::open(file_name).expect("Failed to open file");
+/// Process command line options and return EditorOptions
+fn process_args(args: &Vec<String>) -> editor::EditorOptions {
+    let mut flags = Vec::new();
+    let mut file_names = Vec::new();
+    let file_name: String;
+    let flags_regex = Regex::new(r"--?\w+").unwrap();
+    let default_files = vec!["target/debug/via", "via"];
+    for arg in args {
+        if flags_regex.is_match(&arg) {
+            flags.push(arg);
+        } else if !default_files.contains(&arg.as_str()) {
+            file_names.push(arg);
+        }
+    }
+    if file_names.len() == 1 {
+        file_name = file_names.first().unwrap().to_string();
+    } else {
+        println!("{:?}", file_names);
+        panic!("Must specify only one filed to edit"); // Maybe change this to edit multiple files later on
+    }
+    let mut editor_options = editor::EditorOptions::new(file_name);
+    for option in flags {
+        /*
+        Example:
+        if (option == "-v") {
+            editor_options.verbose = true;
+        }
+        */
+    }
+    editor_options
+}
+
+fn initialize(editor_options: editor::EditorOptions) -> editor::Editor {
+    // TODO: Might not want to create file, but instead write to memory then at the end then write to file
+    let file_name = &editor_options.file_name;
+    let file_path = Path::new(&file_name);
+    let file: File;
+    if !file_path.is_file() {
+        panic!("{} is not a file", file_name);
+    } else if file_path.exists() {
+        file = File::open(file_name).expect("Failed to open file");
+    } else {
+        File::create(file_path).expect("Unable to create file");
+        file = File::open(file_name).expect("Failed to open file");
+    }
     let mut reader = BufReader::new(file);
-    // Read until viewport is reached
+    // Read until viewport is filled
     // For now, only read 2 lines
     let mut initial_text =String::new();
     let eof_reached = read_lines(&mut reader, 2, &mut initial_text);
     let text_len = initial_text.len();
-    let mut original_buffer = Buffer::new();
+    let mut original_buffer = piece_table::Buffer::new();
     original_buffer.update_add(initial_text);
-    let mut piece_table = PieceTable::new(original_buffer);
-    let mut first_entry = TableEntry::new(false, 0, text_len);
+    let mut piece_table = piece_table::PieceTable::new(original_buffer);
+    let mut first_entry = piece_table::TableEntry::new(false, 0, text_len);
     if text_len == 0 {
         first_entry.active = false;
     }
     piece_table.push(first_entry);
 
-    Editor::new(piece_table, reader, eof_reached)
+    editor::Editor::new(piece_table, reader, eof_reached, editor_options)
 }
 
 /// Read `num_lines` from `reader`, append to str, and returns whether EOF reached
 fn read_lines(reader: &mut BufReader<File>, num_lines: usize, str: &mut String) -> bool {
     let mut temp_str = String::new();
     for _ in 0..num_lines {
-        match reader.read_line(&mut temp_str) {
+        // match reader.read_line(&mut temp_str) {
+        match std::io::BufRead::read_line(reader, &mut temp_str) {
             Ok(0) => return true,
             Ok(len) => len,
-            Err(e) => panic!("Error reading file: {:?}", e),
+            Err(e) => panic!("Error reading file: {}", e),
         };
         str.push_str(&temp_str);
         temp_str.clear();
