@@ -59,8 +59,8 @@ fn main() {
         }
         stdout.flush().unwrap();
     }
-    write!(stdout, "{}", termion::cursor::Show).unwrap();
     */
+    write!(stdout, "{}", termion::cursor::Show).unwrap();
 }
 
 /// Process command line options and return EditorOptions
