@@ -1,151 +1,191 @@
+// use unicode_segmentation::UnicodeSegmentation;
+
 #[derive(Debug)]
 /// The main structure for storing text
 pub(crate) struct PieceTable {
     /// The main table, contains `TableEntry`'s
     table: Vec<TableEntry>,
     /// Original buffer
-    pub(crate) original_buffer: Buffer,
+    pub(crate) original_buffer: String,
     /// Add buffer
-    add_buffer: Buffer,
+    add_buffer: String,
     /// All active text. Only to be used when `text_up_to_date == true`
     text: String,
+    /// Length of text if it was up to date (`text` may not not be up to date)
+    text_len: usize,
     /// Whether `text` is up to date
     text_up_to_date: bool,
-    /// List of actions, which are lists of table entries
-    /// 
-    /// **NOTE**: Vectors stored are copies of the original
-    actions: Vec<Vec<TableEntry>>,
+    /// List of actions, which are lists of table entries' indices
+    actions: Vec<Vec<usize>>,
     /// Where in `self.actions` we are currently at
     /// 
-    /// **NOTE**: A value of 0 means no actions have been taken.
-    /// A value of 1 means 1 action has been taken.
+    /// **NOTE**: A value of 0 means no actions have been taken
     actions_index: usize,
 }
 
 impl PieceTable {
     /// Initializes a piece table with the original buffer set
-    pub(crate) fn new(original_buffer: Buffer) -> PieceTable {
-        PieceTable {table: Vec::new(), original_buffer: original_buffer, add_buffer: Buffer::new(), text: String::new(), text_up_to_date: true, actions: Vec::new(), actions_index: 0}
+    pub(crate) fn new(initial_text: String) -> PieceTable {
+        let text_len = initial_text.len();
+        let text = initial_text.clone();
+        let table = if text_len == 0 {Vec::new()} else {vec![TableEntry::new(false, 0, text_len)]};
+        PieceTable {
+            table: table,
+            original_buffer: initial_text,
+            add_buffer: String::new(),
+            text: text,
+            text_len: text_len,
+            text_up_to_date: true,
+            actions: Vec::new(),
+            actions_index: 0,
+        }
     }
 
     /// Add text at a certain index
     pub(crate) fn add_text(&mut self, text: String, cursor: usize) {
-        let text_len = self.text_len();
-        let add_buffer_len = self.add_buffer.text().len();
-        if cursor > text_len {
-            panic!("cursor ({}) is a greater value than text len ({})", cursor, text_len);
-        } else if cursor == 0 {
-            let new_table_entry = TableEntry::new(true, add_buffer_len, add_buffer_len + text.len());
-            self.add_action(vec![new_table_entry]);
-            self.table.insert(0, new_table_entry);
-        } else if cursor == text_len {
-            let new_table_entry = TableEntry::new(true, add_buffer_len, add_buffer_len + text.len());
-            self.add_action(vec![new_table_entry]);
-            self.table.push(new_table_entry);
+        let text_len = text.len();
+        let add_buffer_len = self.add_buffer.len();
+        if cursor > self.text_len {
+            panic!("cursor ({}) is a greater value than text len ({})", cursor, self.text_len);
+        }
+        let mut curr_pos = 0;
+        let mut table_entry_index = 0;
+        let mut action: Vec<usize> = Vec::new();
+        let mut add_table: Vec<TableEntry> = Vec::with_capacity(3);
+        let mut add_table_indices: Vec<usize> = Vec::with_capacity(3);
+        if cursor == 0 {
+            self.table.insert(0, TableEntry::new(true, add_buffer_len, add_buffer_len + text.len()));
+            action.push(0);
+        } else if cursor == self.text_len {
+            self.table.push(TableEntry::new(true, add_buffer_len, add_buffer_len + text.len()));
+            action.push(self.table.len());
         } else {
-            let mut table_entry_count = 0;
-            let mut curr_pos = 0;
-            for table_entry in &mut self.table {
+            for table_entry in self.table.iter_mut() {
                 if table_entry.active {
                     let len = table_entry.end_index - table_entry.start_index;
-                    if curr_pos + len > cursor {
-                        let last_table_entry_length = len - (cursor - curr_pos);
-                        let old_table_entry_end_index = table_entry.end_index;
-
-                        table_entry.end_index = table_entry.end_index - last_table_entry_length;
-                        let last_table_entry = TableEntry::new(table_entry.is_add_buffer, table_entry.end_index, old_table_entry_end_index);
-                        self.table.insert(table_entry_count + 1, last_table_entry);
-
-                        let middle_table_entry = TableEntry::new(true, add_buffer_len, add_buffer_len + text.len());
-                        self.add_action(vec![middle_table_entry]);
-                        self.table.insert(table_entry_count + 1, middle_table_entry);
+                    if curr_pos == cursor {
+                        add_table.push(TableEntry::new(true, add_buffer_len, add_buffer_len + text.len()));
+                        add_table_indices.push(table_entry_index);
                         break
-                    } else if curr_pos == cursor {
-                        let new_table_entry = TableEntry::new(true, add_buffer_len, add_buffer_len + text.len());
-                        self.add_action(vec![new_table_entry]);
-                        self.table.insert(table_entry_count, new_table_entry);
+                    } else if curr_pos + len > cursor {
+                        // Split into 2 parts and disable original [ab] + [c] -> [a][c][b]
+                        let split_point = cursor - curr_pos;
+
+                        table_entry.active = false;
+                        action.push(table_entry_index);
+
+                        add_table.push(TableEntry::new(table_entry.is_add_buffer, table_entry.start_index, table_entry.start_index + split_point));
+                        action.push(table_entry_index + 1);
+                        add_table.push(TableEntry::new(true, add_buffer_len, add_buffer_len + text.len()));
+                        action.push(table_entry_index + 2);
+                        add_table.push(TableEntry::new(table_entry.is_add_buffer, table_entry.start_index + split_point, table_entry.end_index));
+                        action.push(table_entry_index + 3);
+    
+                        add_table_indices.push(table_entry_index);
+                        add_table_indices.push(table_entry_index + 1);
+                        add_table_indices.push(table_entry_index + 2);
                         break
                     }
                     curr_pos += len;
                 }
-                table_entry_count += 1;
+                table_entry_index += 1;
+            }
+    
+            table_entry_index = 0;
+            for table_entry in add_table {
+                self.table.insert(*add_table_indices.get(table_entry_index).unwrap(), table_entry);
+                table_entry_index += 1;
             }
         }
-        self.add_buffer.update_add(text);
+
+        self.add_buffer.push_str(&text);
+        self.add_action(action);
+        self.text_len += text_len;
         self.text_up_to_date = false;
     }
 
     /// Delete text from `start` to `end`
-    fn delete_text(&mut self, start: usize, end: usize) {
-        let text_len = self.text_len();
-        if start >= end || end == 0 || end > text_len  {
-            panic!("Can't delete from start ({}) to end ({}) of text size {}", start, end, self.text_len());
+    pub(crate) fn delete_text(&mut self, start: usize, end: usize) {
+        if start >= end || end == 0 || end > self.text_len  {
+            panic!("Can't delete from start ({}) to end ({}) of text size {}", start, end, self.text_len);
         }
         let mut curr_pos = 0;
-        let mut table_entry_count = 0;
-        let mut action: Vec<TableEntry> = Vec::new();
+        let mut table_entry_index = 0;
+        let mut action: Vec<usize> = Vec::new();
+        let mut add_table: Vec<TableEntry> = Vec::with_capacity(4);
+        let mut add_table_indices: Vec<usize> = Vec::with_capacity(4);
 
-        let mut temp_table_entry = TableEntry::new(true, 0, 0);
-        let mut temp_table_set = false;
-        let mut temp_table_index = 0;
         for table_entry in self.table.iter_mut() {
             if curr_pos == end {
                 break
             }
             if table_entry.active {
                 let len = table_entry.end_index - table_entry.start_index;
-                if curr_pos <= start && curr_pos + len > start && curr_pos + len <= end {
-                    // At table entry to start at and split, but possibly continue
+                if start <= curr_pos && end >= curr_pos + len {
+                    // At table entry to continue/end at
+                    // OR start & end is this exact table entry
+                    table_entry.active = false;
+                    action.push(table_entry_index + add_table.len());
+                } else if start > curr_pos && start < curr_pos + len && end >= curr_pos + len {
+                    // At table entry to start at (split table entry in two)
+                    // Only occurs once, and will be the first
                     let split_point = start - curr_pos;
-                    temp_table_entry = TableEntry::new(table_entry.is_add_buffer, table_entry.start_index, table_entry.start_index + split_point);
-                    table_entry.start_index = table_entry.start_index + split_point;
+                    
                     table_entry.active = false;
-                    action.push(*table_entry);
+                    action.push(table_entry_index);
 
-                    temp_table_index = table_entry_count;
-                    temp_table_set = true;
-                } else if curr_pos >= start && curr_pos + len <= end {
-                    // Start is this/before this cell & end is this/after this cell
-                    table_entry.active = false;
-                    action.push(*table_entry);
-                } else if curr_pos >= start && curr_pos + len > end {
-                    // At the table entry to end at and split
+                    add_table.push(TableEntry::new(table_entry.is_add_buffer, table_entry.start_index, table_entry.start_index + split_point));
+                    add_table_indices.push(table_entry_index + 1);
+                    action.push(table_entry_index + 1);
+                } else if start <= curr_pos && end > curr_pos && end < curr_pos + len {
+                    // At table entry to end at (split table entry in two)
                     let split_point = end - curr_pos;
-                    let mut temp_table_entry = TableEntry::new(table_entry.is_add_buffer, table_entry.start_index, table_entry.start_index + split_point);
-                    temp_table_entry.active = false;
-                    table_entry.start_index = table_entry.start_index + split_point;
-                    action.push(temp_table_entry);
-                    self.table.insert(table_entry_count, temp_table_entry);
-                    break
-                } else if curr_pos < start && curr_pos + len > start && curr_pos + len > end {
-                    // At table entry to split into 3 [abc] -> [a](b)[c]
-                    let split_point_first = start - curr_pos;
-                    let split_point_second = end - curr_pos;
-                    let old_end_index = table_entry.end_index;
 
-                    table_entry.end_index = split_point_first;
-                    let mut middle_table_entry = TableEntry::new(table_entry.is_add_buffer, table_entry.start_index + split_point_first, table_entry.start_index + split_point_second);
-                    middle_table_entry.active = false;
-                    action.push(middle_table_entry);
-                    let end_table_entry = TableEntry::new(table_entry.is_add_buffer, table_entry.start_index + split_point_second, old_end_index);
-                    self.table.insert(table_entry_count + 1, middle_table_entry);
-                    self.table.insert(table_entry_count + 2, end_table_entry);
+                    table_entry.active = false;
+                    action.push(table_entry_index + add_table.len());
+
+                    add_table.push(TableEntry::new(table_entry.is_add_buffer, table_entry.start_index + split_point, table_entry.end_index));
+                    add_table_indices.push(table_entry_index + add_table.len());
+                    action.push(table_entry_index + add_table.len());
+                    break
+                } else if start > curr_pos && end < curr_pos + len {
+                    // At table entry to split into 3 [abc] -> [a](b)[c]
+                    // Only occurs once, and will be the first/last
+                    let first_split = start - curr_pos;
+                    let second_split = end - curr_pos;
+
+                    table_entry.active = false;
+                    action.push(table_entry_index);
+
+                    add_table.push(TableEntry::new(table_entry.is_add_buffer, table_entry.start_index, table_entry.start_index + first_split));
+                    add_table_indices.push(table_entry_index + 1);
+                    action.push(table_entry_index + 1);
+
+                    add_table.push(TableEntry::new(table_entry.is_add_buffer, table_entry.start_index + second_split, table_entry.end_index));
+                    add_table_indices.push(table_entry_index + 2);
+                    action.push(table_entry_index + 2);
                     break
                 }
                 curr_pos += len;
             }
-            table_entry_count += 1;
+            table_entry_index += 1;
         }
-        if temp_table_set {
-            self.table.insert(temp_table_index, temp_table_entry);
+
+        table_entry_index = 0;
+        for table_entry in add_table {
+            self.table.insert(*add_table_indices.get(table_entry_index).unwrap(), table_entry);
+            table_entry_index += 1;
         }
+
         self.add_action(action);
+        self.text_len -= end - start;
         self.text_up_to_date = false;
     }
 
     /// Add a table entry to actions
-    fn add_action(&mut self, action: Vec<TableEntry>) {
+    fn add_action(&mut self, action: Vec<usize>) {
         // Remove actions after current index
+        // TODO: Remove all unecessary TableEntry's
         self.actions = self.actions[..self.actions_index].to_vec();
         self.actions.push(action);
         self.actions_index = self.actions.len();
@@ -156,22 +196,17 @@ impl PieceTable {
         if self.actions.is_empty() {
             panic!("Unable to undo");
         }
-        // TODO: I'm not sure how computationally expensive this is, but it probably could be improved
-        match self.actions.get(self.actions_index - 1) {
-            Some(action) => {
-                for table_entry_copy in action {
-                    for table_entry in self.table.iter_mut() {
-                        if table_entry.is_add_buffer == table_entry_copy.is_add_buffer
-                            && table_entry.start_index == table_entry_copy.start_index
-                            && table_entry.end_index == table_entry_copy.end_index {
-                                table_entry.switch();
-                                break
-                            }
-                    }
-                }
+
+        for index in self.actions.get(self.actions_index - 1).unwrap() {
+            let table_entry = self.table.get_mut(*index).unwrap();
+            table_entry.switch();
+            if table_entry.active {
+                self.text_len += table_entry.end_index - table_entry.start_index;
+            } else {
+                self.text_len -= table_entry.end_index - table_entry.start_index;
             }
-            None => panic!("Unable to get last action"),
-        };
+        }
+
         self.text_up_to_date = false;
         self.actions_index -= 1;
     }
@@ -181,71 +216,54 @@ impl PieceTable {
         if self.actions.is_empty() || self.actions.len() <= self.actions_index {
             panic!("Unable to redo");
         }
-        match self.actions.get(self.actions_index) {
-            Some(action) => {
-                for table_entry_copy in action {
-                    for table_entry in self.table.iter_mut() {
-                        if table_entry.is_add_buffer == table_entry_copy.is_add_buffer
-                            && table_entry.start_index == table_entry_copy.start_index
-                            && table_entry.end_index == table_entry_copy.end_index {
-                                table_entry.switch();
-                                break
-                            }
-                    }
-                }
+        for index in self.actions.get(self.actions_index).unwrap() {
+            let table_entry = self.table.get_mut(*index).unwrap();
+            table_entry.switch();
+            if table_entry.active {
+                self.text_len += table_entry.end_index - table_entry.start_index;
+            } else {
+                self.text_len -= table_entry.end_index - table_entry.start_index;
             }
-            None => panic!("Unable to get next action"),
-        };
+        }
         self.text_up_to_date = false;
         self.actions_index += 1;
     }
 
-    /// Returns the text represented by a table entry.
-    ///
-    /// Assumes buffer is up to date
+    /// Returns the text represented by a table entry
     fn table_entry_text(&self, table_entry: &TableEntry) -> &str {
         let buffer = if table_entry.is_add_buffer {&self.add_buffer} else {&self.original_buffer};
-        assert!(buffer.text_up_to_date);
-        match buffer.text().get(table_entry.start_index..table_entry.end_index) {
-            Some(text) => text,
-            None => panic!("Unable to get {}[{}..{}]", buffer.text(), table_entry.start_index, table_entry.end_index),
-        }
+        buffer.get(table_entry.start_index..table_entry.end_index).unwrap()
     }
 
-    /// Returns all visible text.
+    /// Returns length of text
+    pub(crate) fn text_len(&self) -> usize {
+        self.text_len
+    }
+
+    /// Returns all visible text
+    /// 
+    /// If you want to get the length of the text, use `text_len(&self)` instead
     pub(crate) fn text(&mut self) -> &str {
-        let a = self.original_buffer.update_text();
-        let b = self.add_buffer.update_text();
-        if self.text_up_to_date && !a && !b {
-            return &self.text;
+        self.update_text();
+        &self.text
+    }
+
+    /// Updates all text for the piece table
+    fn update_text(&mut self) {
+        if self.text_up_to_date {
+            return;
         }
 
-        // TODO: Be more efficient about doing this
         let mut text = String::new();
         for table_entry in &self.table {
             if table_entry.active {
                 text.push_str(self.table_entry_text(table_entry));
             }
         }
+        
+        // assert_eq!(text.len(), self.text_len); // TODO: REMOVE ME LATER
         self.text = text;
         self.text_up_to_date = true;
-        &self.text
-    }
-
-    /// A slightly more efficient way of calculating the length of `self.text().len()`
-    fn text_len(&self) -> usize {
-        if self.text_up_to_date {
-            return self.text.len();
-        }
-
-        // TODO: Be more efficient about doing this
-        let mut len = 0;
-        for table_entry in &self.table {
-            if table_entry.active {
-                len += table_entry.end_index - table_entry.start_index;
-            }
-        }
-        len
     }
 
     /// Insert a table entry to a specific index
@@ -255,16 +273,29 @@ impl PieceTable {
     }
 
     /// Add a table entry to the end of the table
-    pub(crate) fn push(&mut self, table_entry: TableEntry) {
+    fn push(&mut self, table_entry: TableEntry) {
         self.table.push(table_entry);
         self.text_up_to_date = false;
+    }
+
+    /// Return the index-th line
+    /// TODO: Remove this and do something better regarding lines
+    pub(crate) fn line(&mut self, index: usize) -> Result<&str, &str> {
+        let mut count: usize = 0;
+        for line in self.text().lines() {
+            if count == index {
+                return Ok(line)
+            }
+            count += 1
+        }
+        Err("Invalid line index")
     }
 }
 
 #[derive(Copy, Clone)] // Needed for PieceTable.actions
 #[derive(Debug)]
 /// An entry in PieceTable's table
-pub(crate) struct TableEntry {
+struct TableEntry {
     /// Whether this table entry points to the add buffer
     is_add_buffer: bool,
     /// Start index
@@ -272,13 +303,18 @@ pub(crate) struct TableEntry {
     /// End index
     end_index: usize,
     /// Whether this table is visible
-    pub(crate) active: bool,
+    active: bool,
 }
 
 impl TableEntry {
     /// Initalize a table entry
     pub(crate) fn new(is_add_buffer: bool, start_index: usize, end_index: usize) -> TableEntry {
-        TableEntry {is_add_buffer: is_add_buffer, start_index: start_index, end_index: end_index, active: true}
+        TableEntry {
+            is_add_buffer: is_add_buffer, 
+            start_index: start_index, 
+            end_index: end_index, 
+            active: true,
+        }
     }
 
     /// Change from active to deactivated and visa versa
@@ -287,58 +323,124 @@ impl TableEntry {
     }
 }
 
-#[derive(Debug)]
-/// Immutable text (abstracted)
-pub(crate) struct Buffer {
-    /// Text contained in this buffer. Only use when `text_up_to_date == true`
-    text: String,
-    /// Whether `text` is up to date
-    text_up_to_date: bool,
-    /// Text pieces making up `text`
-    text_pieces: Vec<String>,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-impl Buffer {
-    /// Initializes the buffer with an empty string
-    pub(crate) fn new() -> Buffer {
-        Buffer {text: String::from(""), text_up_to_date: true, text_pieces: Vec::new()}
+    #[test]
+    fn add_text() {
+        let mut piece_table = PieceTable::new("a".to_string());
+        let mut want_str = "a";
+        assert_eq!(piece_table.text_len, want_str.len());
+        assert_eq!(piece_table.text(), want_str);
+
+        piece_table.add_text(" b".to_string(), 1);
+        want_str = "a b";
+        assert_eq!(piece_table.text_len, want_str.len());
+        assert_eq!(piece_table.text(), want_str);
+
+        piece_table.add_text("c ".to_string(), 2);
+        want_str = "a c b";
+        assert_eq!(piece_table.text_len, want_str.len());
+        assert_eq!(piece_table.text(), want_str);
+
+        piece_table.add_text("d ".to_string(), 0);
+        want_str = "d a c b";
+        assert_eq!(piece_table.text_len, want_str.len());
+        assert_eq!(piece_table.text(), want_str);
     }
 
-    fn text(&self) -> &str {
-        &self.text
+    #[test]
+    fn delete_text() {
+        let mut piece_table = PieceTable::new("abc".to_string());
+        piece_table.delete_text(0, 1);
+        let mut want_str = "bc";
+        assert_eq!(piece_table.text_len, want_str.len());
+        assert_eq!(piece_table.text(), want_str);
+
+        piece_table = PieceTable::new("".to_string());
+        piece_table.add_text("abc".to_string(), 0);
+        piece_table.delete_text(1, 2);
+        want_str = "ac";
+        assert_eq!(piece_table.text_len, want_str.len());
+        assert_eq!(piece_table.text(), want_str);
+
+        piece_table = PieceTable::new("abc".to_string());
+        piece_table.delete_text(2, 3);
+        want_str = "ab";
+        assert_eq!(piece_table.text_len, want_str.len());
+        assert_eq!(piece_table.text(), want_str);
+
+        piece_table = PieceTable::new("abc".to_string());
+        piece_table.delete_text(2, 3);
+        want_str = "ab";
+        assert_eq!(piece_table.text_len, want_str.len());
+        assert_eq!(piece_table.text(), want_str);
+
+        piece_table = PieceTable::new("ab".to_string());
+        piece_table.add_text("cd".to_string(), 2);
+        piece_table.delete_text(2, 3);
+        want_str = "abd";
+        assert_eq!(piece_table.text_len, want_str.len());
+        assert_eq!(piece_table.text(), want_str);
+
+        piece_table = PieceTable::new("ab".to_string());
+        piece_table.add_text("cd".to_string(), 2);
+        piece_table.add_text("ef".to_string(), 4);
+        piece_table.delete_text(1, 5);
+        want_str = "af";
+        assert_eq!(piece_table.text_len, want_str.len());
+        assert_eq!(piece_table.text(), want_str);
+
+        piece_table = PieceTable::new("ab".to_string());
+        piece_table.add_text("cd".to_string(), 2);
+        piece_table.add_text("ef".to_string(), 4);
+        piece_table.delete_text(1, 6);
+        want_str = "a";
+        assert_eq!(piece_table.text_len, want_str.len());
+        assert_eq!(piece_table.text(), want_str);
+
+        piece_table = PieceTable::new("ab".to_string());
+        piece_table.add_text("cd".to_string(), 2);
+        piece_table.add_text("ef".to_string(), 4);
+        piece_table.delete_text(0, 6);
+        want_str = "";
+        assert_eq!(piece_table.text_len, want_str.len());
+        assert_eq!(piece_table.text(), want_str);
     }
 
-    /// Make `self.text` up to date.
-    ///
-    /// Returns whether text was updated or not
-    fn update_text(&mut self) -> bool {
-        if self.text_up_to_date {
-            return false;
-        }
-        // TODO: Change this to keep track of self.text_pieces_index to be more efficient
-        // e.g. start at the last added index rather than creating from scratch every time
-        self.text.clear();
-        for s in &self.text_pieces {
-            self.text.push_str(&s);
-        }
-        self.text_up_to_date = true;
-        true
-    }
+    #[test]
+    fn undo_redo() {
+        let mut piece_table = PieceTable::new("abc".to_string());
+        piece_table.delete_text(0, 1);
+        let mut want_str = "abc";
+        piece_table.undo();
+        assert_eq!(piece_table.text_len, want_str.len());
+        assert_eq!(piece_table.text(), want_str);
 
-    /// Add a text piece to text pieces
-    fn add(&mut self, text: String) {
-        self.text_pieces.push(text);
-        self.text_up_to_date = false;
-    }
+        piece_table.redo();
+        want_str = "bc";
+        assert_eq!(piece_table.text_len, want_str.len());
+        assert_eq!(piece_table.text(), want_str);
 
-    /// Add a text piece AND update `self.text`
-    pub(crate) fn update_add(&mut self, text: String) {
-        if self.text_up_to_date {
-            self.text.push_str(text.as_str());
-            self.text_pieces.push(text);
-        } else {
-            self.add(text);
-            self.update_text();
-        }
+        piece_table = PieceTable::new("abc".to_string());
+        piece_table.add_text("d".to_string(), 3); // "abcd"
+        piece_table.delete_text(0, 2); // "cd"
+        piece_table.undo();
+        want_str = "abcd";
+        assert_eq!(piece_table.text_len, want_str.len());
+        assert_eq!(piece_table.text(), want_str);
+        piece_table.undo();
+        want_str = "abc";
+        assert_eq!(piece_table.text_len, want_str.len());
+        assert_eq!(piece_table.text(), want_str);
+        piece_table.redo();
+        want_str = "abcd";
+        assert_eq!(piece_table.text_len, want_str.len());
+        assert_eq!(piece_table.text(), want_str);
+        piece_table.redo();
+        want_str = "cd";
+        assert_eq!(piece_table.text_len, want_str.len());
+        assert_eq!(piece_table.text(), want_str);
     }
 }

@@ -14,12 +14,20 @@ pub(crate) struct Editor {
     eof_reached: bool,
     /// Configured options
     options: EditorOptions,
+    /// Represents each line of the editor, and how many characters are in that line
+    lines: Vec<usize>,
 }
 
 impl Editor {
     /// Initialize a new editor with a piece table and reader
     pub(crate) fn new(piece_table: super::piece_table::PieceTable, reader: BufReader<File>, eof_reached: bool, options: EditorOptions) -> Editor {
-        Editor {piece_table: piece_table, reader: reader, eof_reached: eof_reached, options: options}
+        Editor {piece_table: piece_table, 
+            reader: reader, 
+            eof_reached: 
+            eof_reached, 
+            options: options,
+            lines: Vec::new(),
+        }
     }
 
     /// Read to end of the file and add it to `piece_table.original_buffer`
@@ -36,18 +44,26 @@ impl Editor {
             final_str.push_str(&temp_str);
             temp_str.clear();
         }
-        self.piece_table.original_buffer.update_add(final_str);
+        self.piece_table.original_buffer.push_str(&final_str);
+    }
+
+    /// Returns the file name
+    fn file_name(&self) -> &String {
+        return &self.options.file_name;
     }
 }
 
 #[derive(Debug)]
 pub(crate) struct EditorOptions {
+    /// Name of the file being editing
     pub(crate) file_name: String,
+    /// Level of verboseness
+    pub(crate) verboseness: usize,
 }
 
 impl EditorOptions {
     /// Return default options
     pub(crate) fn new(file_name: String) -> EditorOptions {
-        EditorOptions {file_name: file_name}
+        EditorOptions {file_name: file_name, verboseness: 1}
     }
 }
