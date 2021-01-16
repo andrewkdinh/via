@@ -2,34 +2,16 @@
 // #![warn(unused_variables)]
 // #![warn(unused_mut)]
 
-extern crate termion;
-extern crate regex;
-
 use std::env;
-use std::fs::File;
-use std::io::{BufReader};
-// use std::io::prelude::*;
-use std::path::Path;
-use regex::Regex;
 
-use std::convert::TryInto;
+mod modules;
 
-mod editor;
-mod piece_table;
-
-// use termion::{color, cursor, clear};
-// use termion::event::*;
-use termion::event::Key;
-use termion::input::TermRead;
-use termion::raw::IntoRawMode;
-use std::io::{Write, stdout, stdin};
+use modules::via::Via;
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
-    // TODO: Match command line options, different order, etc.
-    let editor = initialize(process_args(&args));
-    let mut piece_table = editor.piece_table;
-
+    // let mut via = Via::new(env::args().collect());
+    /*
+    let mut editor = initialize(process_args(&args));
     // Print the current file text onto screen
     let stdin = stdin();
     let mut stdout = stdout().into_raw_mode().unwrap();
@@ -41,7 +23,7 @@ fn main() {
         termion::clear::All,
         termion::cursor::Goto(1, 1)).unwrap();
 
-    for line in piece_table.text().lines() {
+    for line in editor.piece_table.text().lines() {
         editor_y += 1;
         write!(stdout,
             "{}{}",
@@ -50,9 +32,9 @@ fn main() {
     }
     stdout.flush().unwrap();
 
-    let mut buffer_index = piece_table.text_len();
+    let mut buffer_index = editor.piece_table.text_len();
     let mut cmd_index = 0;
-    let mut cmd_piece_table = piece_table::PieceTable::new("".to_string());
+    let mut cmd_piece_table = piece_table::PieceTable::new();
     let mut mode = 1; // [0: insert, 1: visual, 2: command]
     for c in stdin.keys() {
         write!(stdout,
@@ -61,7 +43,9 @@ fn main() {
                termion::clear::CurrentLine)
                 .unwrap();
 
-        let i = c.unwrap();
+        editor.process(c.unwrap());
+        */
+        /*
         if i == Key::Esc {
             mode = 1
         } else if mode == 0 {
@@ -132,87 +116,6 @@ fn main() {
         }
         stdout.flush().unwrap();
     }
-
     write!(stdout, "{}", termion::cursor::Show).unwrap();
-}
-
-/// Process command line options and return EditorOptions
-fn process_args(args: &Vec<String>) -> editor::EditorOptions {
-    let mut flags = Vec::new();
-    let mut file_names = Vec::new();
-    let file_name: String;
-    let flags_regex = Regex::new(r"--?\w+").unwrap();
-    let default_files = vec!["target/debug/via", "via"];
-    for arg in args {
-        if flags_regex.is_match(&arg) {
-            flags.push(arg);
-        } else if !default_files.contains(&arg.as_str()) {
-            file_names.push(arg);
-        }
-    }
-    if file_names.len() == 1 {
-        file_name = file_names.first().unwrap().to_string();
-    } else {
-        println!("{:?}", file_names);
-        panic!("Must specify a single file to edit"); // Maybe change this to edit multiple files later on
-    }
-    let mut editor_options = editor::EditorOptions::new(file_name);
-    for option in flags {
-        if option == "-v" {
-            editor_options.verboseness += 1;
-        }
-    }
-    editor_options
-}
-
-fn initialize(editor_options: editor::EditorOptions) -> editor::Editor {
-    // TODO: Might not want to create file, but instead write to memory then at the end then write to file
-    let file_name = &editor_options.file_name;
-    let file_path = Path::new(&file_name);
-    let file: File;
-    if !file_path.is_file() {
-        panic!("{} is not a file", file_name);
-    } else if file_path.exists() {
-        file = File::open(file_name).expect("Failed to open file");
-    } else {
-        File::create(file_path).expect("Unable to create file");
-        file = File::open(file_name).expect("Failed to open file");
-    }
-    let mut reader = BufReader::new(file);
-    // Read until viewport is filled
-    // For now, only read 2 lines
-    let mut initial_text =String::new();
-    let eof_reached = read_lines(&mut reader, 1000000000000000, &mut initial_text); // TODO: FIX ME
-    // TODO: Add this to initialization of piece table
-
-    editor::Editor::new(piece_table::PieceTable::new(initial_text), reader, eof_reached, editor_options)
-}
-
-/// Read `num_lines` from `reader`, append to str, and returns whether EOF reached
-fn read_lines(reader: &mut BufReader<File>, num_lines: usize, str: &mut String) -> bool {
-    let mut temp_str = String::new();
-    for _ in 0..num_lines {
-        // match reader.read_line(&mut temp_str) {
-        match std::io::BufRead::read_line(reader, &mut temp_str) {
-            Ok(0) => return true,
-            Ok(len) => len,
-            Err(e) => panic!("Error reading file: {}", e),
-        };
-        str.push_str(&temp_str);
-        temp_str.clear();
-    }
-    false
-}
-
-#[cfg(test)]
-mod tests {
-    /*
-    use super::*;
-
-    #[test]
-    fn init() {
-        let args: Vec<String> = vec!["unittests/1.in".to_string()];
-        let editor = initialize(process_args(&args));
-    }
     */
 }

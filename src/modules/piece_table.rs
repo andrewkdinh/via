@@ -1,4 +1,4 @@
-// use unicode_segmentation::UnicodeSegmentation;
+use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Debug)]
 /// The main structure for storing text
@@ -24,77 +24,79 @@ pub(crate) struct PieceTable {
 }
 
 impl PieceTable {
-    /// Initializes a piece table with the original buffer set
-    pub(crate) fn new(initial_text: String) -> PieceTable {
-        let text_len = initial_text.len();
-        let text = initial_text.clone();
-        let table = if text_len == 0 {Vec::new()} else {vec![TableEntry::new(false, 0, text_len)]};
+    /// Initializes a piece table
+    pub(crate) fn new() -> PieceTable {
         PieceTable {
-            table: table,
-            original_buffer: initial_text,
+            table: Vec::new(),
+            original_buffer: String::new(),
             add_buffer: String::new(),
-            text: text,
-            text_len: text_len,
+            text: String::new(),
+            text_len: 0,
             text_up_to_date: true,
             actions: Vec::new(),
             actions_index: 0,
         }
     }
 
+    /// Append text to the original buffer and add a table entry
+    pub(crate) fn update_original_buffer(&mut self, text: String) {
+        let org_buffer_len = self.original_buffer.len();
+        self.original_buffer.push_str(&text);
+        self.table.push(TableEntry::new(false, org_buffer_len, org_buffer_len + text.len()));
+        self.text_len += text.len();
+        self.text_up_to_date = false;
+    }
+
     /// Add text at a certain index
-    pub(crate) fn add_text(&mut self, text: String, cursor: usize) {
+    pub(crate) fn add_text(&mut self, text: String, index: usize) {
         let text_len = text.len();
         let add_buffer_len = self.add_buffer.len();
-        if cursor > self.text_len {
-            panic!("cursor ({}) is a greater value than text len ({})", cursor, self.text_len);
+        if index > self.text_len {
+            panic!("index ({}) is a greater value than text len ({})", index, self.text_len);
         }
         let mut curr_pos = 0;
-        let mut table_entry_index = 0;
         let mut action: Vec<usize> = Vec::new();
         let mut add_table: Vec<TableEntry> = Vec::with_capacity(3);
         let mut add_table_indices: Vec<usize> = Vec::with_capacity(3);
-        if cursor == 0 {
+        if index == 0 {
             self.table.insert(0, TableEntry::new(true, add_buffer_len, add_buffer_len + text.len()));
             action.push(0);
-        } else if cursor == self.text_len {
+        } else if index == self.text_len {
             self.table.push(TableEntry::new(true, add_buffer_len, add_buffer_len + text.len()));
             action.push(self.table.len());
         } else {
-            for table_entry in self.table.iter_mut() {
+            for (i, table_entry) in self.table.iter_mut().enumerate() {
                 if table_entry.active {
                     let len = table_entry.end_index - table_entry.start_index;
-                    if curr_pos == cursor {
+                    if curr_pos == index {
                         add_table.push(TableEntry::new(true, add_buffer_len, add_buffer_len + text.len()));
-                        add_table_indices.push(table_entry_index);
+                        add_table_indices.push(i);
                         break
-                    } else if curr_pos + len > cursor {
+                    } else if curr_pos + len > index {
                         // Split into 2 parts and disable original [ab] + [c] -> [a][c][b]
-                        let split_point = cursor - curr_pos;
+                        let split_point = index - curr_pos;
 
                         table_entry.active = false;
-                        action.push(table_entry_index);
+                        action.push(i);
 
                         add_table.push(TableEntry::new(table_entry.is_add_buffer, table_entry.start_index, table_entry.start_index + split_point));
-                        action.push(table_entry_index + 1);
+                        action.push(i + 1);
                         add_table.push(TableEntry::new(true, add_buffer_len, add_buffer_len + text.len()));
-                        action.push(table_entry_index + 2);
+                        action.push(i + 2);
                         add_table.push(TableEntry::new(table_entry.is_add_buffer, table_entry.start_index + split_point, table_entry.end_index));
-                        action.push(table_entry_index + 3);
+                        action.push(i + 3);
     
-                        add_table_indices.push(table_entry_index);
-                        add_table_indices.push(table_entry_index + 1);
-                        add_table_indices.push(table_entry_index + 2);
+                        add_table_indices.push(i);
+                        add_table_indices.push(i + 1);
+                        add_table_indices.push(i + 2);
                         break
                     }
                     curr_pos += len;
                 }
-                table_entry_index += 1;
             }
     
-            table_entry_index = 0;
-            for table_entry in add_table {
-                self.table.insert(*add_table_indices.get(table_entry_index).unwrap(), table_entry);
-                table_entry_index += 1;
+            for (i, table_entry) in add_table_indices.iter().zip(add_table) {
+                self.table.insert(*i, table_entry);
             }
         }
 
@@ -110,12 +112,11 @@ impl PieceTable {
             panic!("Can't delete from start ({}) to end ({}) of text size {}", start, end, self.text_len);
         }
         let mut curr_pos = 0;
-        let mut table_entry_index = 0;
         let mut action: Vec<usize> = Vec::new();
         let mut add_table: Vec<TableEntry> = Vec::with_capacity(4);
         let mut add_table_indices: Vec<usize> = Vec::with_capacity(4);
 
-        for table_entry in self.table.iter_mut() {
+        for (i, table_entry) in self.table.iter_mut().enumerate() {
             if curr_pos == end {
                 break
             }
@@ -125,28 +126,28 @@ impl PieceTable {
                     // At table entry to continue/end at
                     // OR start & end is this exact table entry
                     table_entry.active = false;
-                    action.push(table_entry_index + add_table.len());
+                    action.push(i + add_table.len());
                 } else if start > curr_pos && start < curr_pos + len && end >= curr_pos + len {
                     // At table entry to start at (split table entry in two)
                     // Only occurs once, and will be the first
                     let split_point = start - curr_pos;
                     
                     table_entry.active = false;
-                    action.push(table_entry_index);
+                    action.push(i);
 
                     add_table.push(TableEntry::new(table_entry.is_add_buffer, table_entry.start_index, table_entry.start_index + split_point));
-                    add_table_indices.push(table_entry_index + 1);
-                    action.push(table_entry_index + 1);
+                    add_table_indices.push(i + 1);
+                    action.push(i + 1);
                 } else if start <= curr_pos && end > curr_pos && end < curr_pos + len {
                     // At table entry to end at (split table entry in two)
                     let split_point = end - curr_pos;
 
                     table_entry.active = false;
-                    action.push(table_entry_index + add_table.len());
+                    action.push(i + add_table.len());
 
                     add_table.push(TableEntry::new(table_entry.is_add_buffer, table_entry.start_index + split_point, table_entry.end_index));
-                    add_table_indices.push(table_entry_index + add_table.len());
-                    action.push(table_entry_index + add_table.len());
+                    add_table_indices.push(i + add_table.len());
+                    action.push(i + add_table.len());
                     break
                 } else if start > curr_pos && end < curr_pos + len {
                     // At table entry to split into 3 [abc] -> [a](b)[c]
@@ -155,26 +156,23 @@ impl PieceTable {
                     let second_split = end - curr_pos;
 
                     table_entry.active = false;
-                    action.push(table_entry_index);
+                    action.push(i);
 
                     add_table.push(TableEntry::new(table_entry.is_add_buffer, table_entry.start_index, table_entry.start_index + first_split));
-                    add_table_indices.push(table_entry_index + 1);
-                    action.push(table_entry_index + 1);
+                    add_table_indices.push(i + 1);
+                    action.push(i + 1);
 
                     add_table.push(TableEntry::new(table_entry.is_add_buffer, table_entry.start_index + second_split, table_entry.end_index));
-                    add_table_indices.push(table_entry_index + 2);
-                    action.push(table_entry_index + 2);
+                    add_table_indices.push(i + 2);
+                    action.push(i + 2);
                     break
                 }
                 curr_pos += len;
             }
-            table_entry_index += 1;
         }
 
-        table_entry_index = 0;
-        for table_entry in add_table {
-            self.table.insert(*add_table_indices.get(table_entry_index).unwrap(), table_entry);
-            table_entry_index += 1;
+        for (i, table_entry) in add_table_indices.iter().zip(add_table) {
+            self.table.insert(*i, table_entry);
         }
 
         self.add_action(action);
@@ -232,7 +230,7 @@ impl PieceTable {
     /// Returns the text represented by a table entry
     fn table_entry_text(&self, table_entry: &TableEntry) -> &str {
         let buffer = if table_entry.is_add_buffer {&self.add_buffer} else {&self.original_buffer};
-        buffer.get(table_entry.start_index..table_entry.end_index).unwrap()
+        buffer.get(table_entry.start_index..table_entry.end_index).unwrap() // TODO: Get this working with Unicode
     }
 
     /// Returns length of text
@@ -261,7 +259,6 @@ impl PieceTable {
             }
         }
         
-        // assert_eq!(text.len(), self.text_len); // TODO: REMOVE ME LATER
         self.text = text;
         self.text_up_to_date = true;
     }
@@ -281,12 +278,10 @@ impl PieceTable {
     /// Return the index-th line
     /// TODO: Remove this and do something better regarding lines
     pub(crate) fn line(&mut self, index: usize) -> Result<&str, &str> {
-        let mut count: usize = 0;
-        for line in self.text().lines() {
-            if count == index {
+        for (i, line) in self.text().lines().enumerate() {
+            if i == index {
                 return Ok(line)
             }
-            count += 1
         }
         Err("Invalid line index")
     }
@@ -329,8 +324,9 @@ mod tests {
 
     #[test]
     fn add_text() {
-        let mut piece_table = PieceTable::new("a".to_string());
+        let mut piece_table = PieceTable::new();
         let mut want_str = "a";
+        piece_table.add_text("a".to_string(), 0);
         assert_eq!(piece_table.text_len, want_str.len());
         assert_eq!(piece_table.text(), want_str);
 
@@ -352,39 +348,44 @@ mod tests {
 
     #[test]
     fn delete_text() {
-        let mut piece_table = PieceTable::new("abc".to_string());
+        let mut piece_table = PieceTable::new();
+        piece_table.add_text("abc".to_string(), 0);
         piece_table.delete_text(0, 1);
         let mut want_str = "bc";
         assert_eq!(piece_table.text_len, want_str.len());
         assert_eq!(piece_table.text(), want_str);
 
-        piece_table = PieceTable::new("".to_string());
+        piece_table = PieceTable::new();
         piece_table.add_text("abc".to_string(), 0);
         piece_table.delete_text(1, 2);
         want_str = "ac";
         assert_eq!(piece_table.text_len, want_str.len());
         assert_eq!(piece_table.text(), want_str);
 
-        piece_table = PieceTable::new("abc".to_string());
+        piece_table = PieceTable::new();
+        piece_table.add_text("abc".to_string(), 0);
         piece_table.delete_text(2, 3);
         want_str = "ab";
         assert_eq!(piece_table.text_len, want_str.len());
         assert_eq!(piece_table.text(), want_str);
 
-        piece_table = PieceTable::new("abc".to_string());
+        piece_table = PieceTable::new();
+        piece_table.add_text("abc".to_string(), 0);
         piece_table.delete_text(2, 3);
         want_str = "ab";
         assert_eq!(piece_table.text_len, want_str.len());
         assert_eq!(piece_table.text(), want_str);
 
-        piece_table = PieceTable::new("ab".to_string());
+        piece_table = PieceTable::new();
+        piece_table.add_text("ab".to_string(), 0);
         piece_table.add_text("cd".to_string(), 2);
         piece_table.delete_text(2, 3);
         want_str = "abd";
         assert_eq!(piece_table.text_len, want_str.len());
         assert_eq!(piece_table.text(), want_str);
 
-        piece_table = PieceTable::new("ab".to_string());
+        piece_table = PieceTable::new();
+        piece_table.add_text("ab".to_string(), 0);
         piece_table.add_text("cd".to_string(), 2);
         piece_table.add_text("ef".to_string(), 4);
         piece_table.delete_text(1, 5);
@@ -392,7 +393,8 @@ mod tests {
         assert_eq!(piece_table.text_len, want_str.len());
         assert_eq!(piece_table.text(), want_str);
 
-        piece_table = PieceTable::new("ab".to_string());
+        piece_table = PieceTable::new();
+        piece_table.add_text("ab".to_string(), 0);
         piece_table.add_text("cd".to_string(), 2);
         piece_table.add_text("ef".to_string(), 4);
         piece_table.delete_text(1, 6);
@@ -400,7 +402,8 @@ mod tests {
         assert_eq!(piece_table.text_len, want_str.len());
         assert_eq!(piece_table.text(), want_str);
 
-        piece_table = PieceTable::new("ab".to_string());
+        piece_table = PieceTable::new();
+        piece_table.add_text("ab".to_string(), 0);
         piece_table.add_text("cd".to_string(), 2);
         piece_table.add_text("ef".to_string(), 4);
         piece_table.delete_text(0, 6);
@@ -411,7 +414,8 @@ mod tests {
 
     #[test]
     fn undo_redo() {
-        let mut piece_table = PieceTable::new("abc".to_string());
+        let mut piece_table = PieceTable::new();
+        piece_table.add_text("abc".to_string(), 0);
         piece_table.delete_text(0, 1);
         let mut want_str = "abc";
         piece_table.undo();
@@ -423,7 +427,8 @@ mod tests {
         assert_eq!(piece_table.text_len, want_str.len());
         assert_eq!(piece_table.text(), want_str);
 
-        piece_table = PieceTable::new("abc".to_string());
+        piece_table = PieceTable::new();
+        piece_table.add_text("abc".to_string(), 0);
         piece_table.add_text("d".to_string(), 3); // "abcd"
         piece_table.delete_text(0, 2); // "cd"
         piece_table.undo();
@@ -440,6 +445,24 @@ mod tests {
         assert_eq!(piece_table.text(), want_str);
         piece_table.redo();
         want_str = "cd";
+        assert_eq!(piece_table.text_len, want_str.len());
+        assert_eq!(piece_table.text(), want_str);
+    }
+
+    #[test]
+    fn edge_cases() {
+        let mut piece_table = PieceTable::new();
+        piece_table.add_text("\n".to_string(), 0);
+        let mut want_str = "\n";
+        assert_eq!(want_str.len(), 1);
+        assert_eq!(piece_table.text_len, want_str.len());
+        assert_eq!(piece_table.text(), want_str);
+
+        piece_table = PieceTable::new();
+        piece_table.add_text("😀".to_string(), 0);
+        want_str = "😀";
+        assert_eq!(want_str.len(), 4);
+        // assert_eq!(want_str.graphemes(true).count(), 1);
         assert_eq!(piece_table.text_len, want_str.len());
         assert_eq!(piece_table.text(), want_str);
     }
