@@ -6,7 +6,7 @@ pub(crate) struct PieceTable {
     /// The main table, contains `TableEntry`'s
     table: Vec<TableEntry>,
     /// Original buffer
-    pub(crate) original_buffer: String,
+    original_buffer: String,
     /// Add buffer
     add_buffer: String,
     /// All active text. Only to be used when `text_up_to_date == true`
@@ -459,10 +459,28 @@ mod tests {
         assert_eq!(piece_table.text(), want_str);
 
         piece_table = PieceTable::new();
+        piece_table.add_text("\n\n\n\n".to_string(), 0);
+        want_str = "\n\n\n\n";
+        assert_eq!(want_str.len(), 4);
+        assert_eq!(piece_table.text_len, want_str.len());
+        assert_eq!(piece_table.text(), want_str);
+
+        // TODO: Add support for graphemes
+        // https://stackoverflow.com/a/46290728
+        piece_table = PieceTable::new();
         piece_table.add_text("😀".to_string(), 0);
         want_str = "😀";
         assert_eq!(want_str.len(), 4);
-        // assert_eq!(want_str.graphemes(true).count(), 1);
+        assert_eq!(want_str.graphemes(true).count(), 1);
+        assert_eq!(piece_table.text_len, want_str.len());
+        assert_eq!(piece_table.text(), want_str);
+
+        piece_table = PieceTable::new();
+        piece_table.add_text("é".to_string(), 0);
+        want_str = "é";
+        assert_eq!(want_str.len(), 3);
+        assert_eq!(want_str.chars().count(), 2);
+        assert_eq!(want_str.graphemes(true).count(), 1);
         assert_eq!(piece_table.text_len, want_str.len());
         assert_eq!(piece_table.text(), want_str);
     }
