@@ -1,6 +1,5 @@
-use unicode_segmentation::UnicodeSegmentation;
+// use unicode_segmentation::UnicodeSegmentation;
 
-#[derive(Debug)]
 /// The main structure for storing text
 pub(crate) struct PieceTable {
     /// The main table, contains `TableEntry`'s
@@ -36,6 +35,11 @@ impl PieceTable {
             actions: Vec::new(),
             actions_index: 0,
         }
+    }
+
+    /// Returns if any actions have been taken
+    pub(crate) fn actions_taken(&self) -> bool {
+        !self.actions.is_empty()
     }
 
     /// Append text to the original buffer and add a table entry
@@ -230,7 +234,7 @@ impl PieceTable {
     /// Returns the text represented by a table entry
     fn table_entry_text(&self, table_entry: &TableEntry) -> &str {
         let buffer = if table_entry.is_add_buffer {&self.add_buffer} else {&self.original_buffer};
-        buffer.get(table_entry.start_index..table_entry.end_index).unwrap() // TODO: Get this working with Unicode
+        buffer.get(table_entry.start_index..table_entry.end_index).unwrap()
     }
 
     /// Returns length of text
@@ -287,8 +291,6 @@ impl PieceTable {
     }
 }
 
-#[derive(Copy, Clone)] // Needed for PieceTable.actions
-#[derive(Debug)]
 /// An entry in PieceTable's table
 struct TableEntry {
     /// Whether this table entry points to the add buffer
@@ -471,7 +473,7 @@ mod tests {
         piece_table.add_text("😀".to_string(), 0);
         want_str = "😀";
         assert_eq!(want_str.len(), 4);
-        assert_eq!(want_str.graphemes(true).count(), 1);
+        // assert_eq!(want_str.graphemes(true).count(), 1);
         assert_eq!(piece_table.text_len, want_str.len());
         assert_eq!(piece_table.text(), want_str);
 
@@ -480,7 +482,7 @@ mod tests {
         want_str = "é";
         assert_eq!(want_str.len(), 3);
         assert_eq!(want_str.chars().count(), 2);
-        assert_eq!(want_str.graphemes(true).count(), 1);
+        // assert_eq!(want_str.graphemes(true).count(), 1);
         assert_eq!(piece_table.text_len, want_str.len());
         assert_eq!(piece_table.text(), want_str);
     }
